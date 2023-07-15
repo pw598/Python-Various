@@ -1,0 +1,452 @@
+---
+title: "Modeling and prediction for movies"
+output: 
+  html_document: 
+    fig_height: 4
+    highlight: pygments
+    theme: spacelab
+---
+
+## Setup
+
+### Load packages
+
+```{r load-packages, message = FALSE}
+library(ggplot2)
+library(dplyr)
+library(statsr)
+library(GGally)
+library(Metrics)
+```
+
+### Load data
+
+Make sure your data and R Markdown files are in the same directory. When loaded
+your data file will be called `movies`. Delete this note when before you submit 
+your work. 
+
+```{r load-data}
+load("movies.Rdata")
+
+movies %>% head(5)
+```
+
+
+
+* * *
+
+## Part 1: Data
+
+As per the dataset documentation, "*The data set is comprised of 651 randomly sampled movies produced and released before 2016*".
+Therefore, as we have a random sample, we can generalize the data to other movies.
+But being an observational dataset, there's no causality, only association possible.
+
+One potential bias source is that the movies not present in the IMDB cannot be selected.
+
+```{r}
+# Dataset shape (rows, columns)
+print( paste('This dataset has', dim(movies)[1], 'rows and', dim(movies)[2], 'columns.') )
+
+# Types of each variable
+str(movies)
+```
+While I am sure we could explore this dataset in many ways, for the purpose of this project that is a Linear Regression Analysis, I will initially drop some columns that will not matter for the study.
+The variables dropped are:
+* actor1, actor2, actor3, actor4, actor5
+* imdb_url and rt_url
+* studio
+* director
+
+```{r}
+# Drop variables and assign to a new dataset name to preserve the original data
+movies2 <- movies %>% 
+  select( !c(actor1, actor2, actor3, actor4, actor5, director, imdb_url, rt_url, studio) )
+```
+
+
+* * *
+
+## Part 2: Research question
+
+The present study will perform a **Multiple Linear Regression Analysis**, seeking answer to the question:
+
+### *What variables from the dataset can better explain the variance of the IMDB ratings?*
+
+
+* * *
+
+## Part 3: Exploratory data analysis
+
+The first steps for a good exploratory analysis are to check the distribution of the data and the descriptive statistics.
+
+```{r}
+# Descriptive Statistics
+summary(movies2)
+```
+The dataset looks balanced for many variables. Let's point some insights extracted from these stats:
+* The *genre* has a spike in Drama movies and the other ones more balanced.
+* The *year* of release looks more concentrated in recent years.
+* The *release month* looks balanced throughout the year. Interesting.
+* *runtime* brings mean and median around 100 minutes.
+* *dvd release year* is around 4 to 6 years more than the mean of the relase of the film. Maybe that has something to do with the time when DVDs became more popular and cheap, thus more titles started to be released.
+* The **target variable** *imdb_rating* goes from (lowest) 1-10 (highest) and the mean is around 6.5, what points out that there are slightly more good ratings than bad ones.
+* The *critics score* is the same thing, with a mean/ median around 6.
+
+#### Let's see the distributions now.
+
+```{r}
+# Selecting only numerical variables
+movies_num <- select_if(movies2, is.numeric) 
+
+# Creating a figure for the plots
+par(mfrow=c(3, 4)) 
+
+
+# Plotting histograms
+for (var in colnames(movies_num)){
+  hist(movies_num[[var]], main=paste('Hist for', var), col='gray' )
+}
+
+```
+
+
+After plotted all of the histograms, we see that most of the variables are skewed. There are no normally distributed variables.
+
+In order to start thinking about the modeling, it is needed to plot the scatterplots and check the relationships between the variables.
+
+```{r}
+# Plot scatterplots
+ggpairs(movies_num[,c('runtime', 'thtr_rel_year', 'thtr_rel_month', 'thtr_rel_day','imdb_rating')])
+ggpairs(movies_num[,c('dvd_rel_year', 'dvd_rel_month', 'imdb_num_votes','imdb_rating')])
+ggpairs(movies_num[,c('critics_score', 'audience_score', 'imdb_rating')])
+
+```
+
+
+With the scatterplots on screen, they present that the highest correlations with the response variable *imdb_ratings* are the scores from other sources, such as *audience_score and critics_score*.
+
+#### Does the genre interfere on the ratings?
+
+As the ratings are skewed, we will prefer to use the median
+
+```{r}
+
+# Mean ratings by 
+movies2 %>% 
+  group_by(genre) %>% 
+  summarise(median_value = quantile(imdb_rating, 0.5),
+            n = n(),
+            mean = mean(imdb_rating)) %>% 
+  arrange(desc(median_value))
+
+```
+
+We can see that the medians are pretty close, there is no much difference. Documentaries, Musicals and Drama lead the ratings.
+
+```{r}
+# Boxplot Ratings by genre
+ggplot(data=movies2, aes(y=reorder(genre,imdb_rating), x=imdb_rating) ) +
+  geom_boxplot(aes(fill=genre), show.legend = FALSE) +
+  ggtitle('Boxplot Ratings by genres')
+```
+
+
+But, can we say that those averages are statistically different?
+
+```{r}
+
+# ANOVA test for the genre means
+anova_genre <- aov(imdb_rating ~ genre, data = movies2)
+summary(anova_genre)
+
+```
+
+With a P value below the significance level of 0.05, **we reject the null hypothesys that the means are equal for all of the groups** and confirm that there is significant difference by genre.
+
+### Does the movie being in the top200 influence the ratings?
+
+```{r}
+
+# ANOVA test for the top 200 box
+anova_top <- aov(imdb_rating ~ top200_box, data = movies2)
+summary(anova_top)
+```
+
+According to the P-Value, yes. Therefore, another variable to be tested in the model.
+
+### Does the movie winning the Best picture prize or Best Pic Nomination influence the ratings?
+
+```{r}
+
+# ANOVA test for best picture
+anova_bestpic <- aov(imdb_rating ~ best_pic_win, data = movies2)
+summary(anova_bestpic)
+
+# ANOVA test for best picture nomination
+anova_bestnom <- aov(imdb_rating ~ best_pic_nom, data = movies2)
+summary(anova_bestnom)
+
+```
+
+Yes, it shows that those variables influence the ratings and should be added to the model for evaluation.
+
+
+### Does best actor or director influence the ratings?
+
+```{r}
+
+# ANOVA test for best actor
+anova_bestactor <- aov(imdb_rating ~ best_actor_win, data = movies2)
+summary(anova_bestactor)
+
+# ANOVA test for best actrees
+anova_bestactress <- aov(imdb_rating ~ best_actress_win, data = movies2)
+summary(anova_bestactress)
+
+# ANOVA test for best picture
+anova_bestdir <- aov(imdb_rating ~ best_dir_win, data = movies2)
+summary(anova_bestdir)
+
+# ANOVA test for Audience Rating
+anova_audience <- aov(imdb_rating ~ audience_rating, data = movies2)
+summary(anova_audience)
+
+# Plot boxplots ratings vs Audience
+ggplot(data=movies2, aes(x=audience_rating, y=imdb_rating)) +
+  geom_boxplot(aes(fill=audience_rating), show.legend = F )+
+  ggtitle('Boxplot Ratings vs. Audience Ratings')
+
+# Plot boxplots ratings vs Critics Rating
+ggplot(data=movies2, aes(x=critics_rating, y=imdb_rating)) +
+  geom_boxplot(aes(fill=critics_rating), , show.legend = F )+
+  ggtitle('Boxplot Ratings vs. Critics Ratings')
+
+```
+
+Best director influences. Best actor or actress, does not.
+Based on the ANOVA tests, Audience and Critics ratings influences IMDB ratings and that is also perceptible on the boxplots.
+
+#### Feature Engineering: Creating a new Variable Prizes
+
+```{r}
+
+# Variable prizes won
+movies2$prizes <- as.integer(movies2$best_actor_win) + as.integer(movies2$best_actress_win) + as.integer(movies2$best_pic_win) + as.integer(movies2$best_dir_win) - 4
+
+# ANOVA test for the new variable prizes
+anova_prizes <- aov(imdb_rating ~ prizes, data = movies2)
+summary(anova_prizes)
+
+# Plot boxplots ratings vs prizes
+ggplot(data=movies2, aes(x=prizes, y=imdb_rating, group=prizes)) +
+  geom_boxplot(aes(fill=factor(prizes)) )+
+  ggtitle('Boxplot Ratings by quantity of prizes')
+
+```
+
+
+The ANOVA test shows that the variable created *prizes* influences the ratings. It will be tested in the model.
+
+
+Before we go to the modeling, let's get rid of some missing values, identified in the stats.
+
+```{r}
+
+# Check for total NAs
+sum(is.na(movies2))
+```
+
+As there are only 25, I will just go ahead and remove them. it is just 3% of the data
+
+```{r}
+# Remove NAs
+movies2 <- na.omit(movies2)
+
+```
+
+
+* * *
+
+## Part 4: Modeling
+
+
+In this section, we will start to model the problem using linear regression.
+
+We know that the best correlated variables are *audience_score, critics_score*. We also know that *genre* makes difference in the ratings, thus I will begin with those variables and build from them.
+
+```{r}
+
+# Initial model
+model1 <- lm(imdb_rating ~ audience_score + critics_score + genre, data=movies2)
+
+summary(model1)
+
+```
+
+That is a good start. The R² was 81% from start.
+Audience and critics scores are very important for the model and help to explain the variance.
+Notice that the genre brings some significant variables and some that are not.
+
+Let's use the forward technique and add some new variables, aiming to increase our R²-Adjusted.
+Some other variables to be used are using the correlation criterium. The stronger, the better, so *imdb_num_votes, runtime, thtr_rel_month and thtr_rel_year*
+
+```{r}
+# Added imdb_num_votes to the model
+model2 <- lm(imdb_rating ~ audience_score + critics_score + genre + imdb_num_votes, data=movies2)
+summary(model2)
+
+```
+
+*imdb_num_votes* proved to be a good variable, increasing our R²-Adj in 1%. 
+
+```{r}
+
+# Adding runtime
+model3 <- lm(imdb_rating ~ audience_score + critics_score + genre + imdb_num_votes +
+               runtime, data=movies2)
+summary(model3)
+
+```
+
+The addition of *runtime* was almost not percepted. That one won't be kept.
+
+```{r}
+
+# Adding thtr_rel_month
+model4 <- lm(imdb_rating ~ audience_score + critics_score + genre + imdb_num_votes+
+               thtr_rel_month, data=movies2)
+summary(model4)
+
+```
+The variable *thtr_rel_month* is also not very meaningful. It will just make the model more complex without really adding value.
+
+```{r}
+
+# Adding thtr_rel_year
+model5 <- lm(imdb_rating ~ audience_score + critics_score + genre + 
+               imdb_num_votes+ thtr_rel_year, data=movies2)
+summary(model5)
+
+```
+
+Once again, the same is valid. The variable *thtr_rel_year* is not relevant to the model.
+
+Now I will add the binary variables *best_dir_win, best_pic_nom, best_pic_win and top200_box*. All of those showed influence over the ratings during ANOVA test.
+
+```{r}
+
+# Adding best director, actor, actress, picture
+model6 <- lm(imdb_rating ~ audience_score + critics_score + genre + imdb_num_votes+ 
+               best_dir_win + best_pic_nom + best_pic_win + top200_box, data=movies2)
+summary(model6)
+
+```
+
+
+The addition of those variables did not increase significantly the R². So, they should be kept out of the model.
+
+
+Let's see the variable prizes.
+```{r}
+
+# Adding prizes
+model7 <- lm(imdb_rating ~ audience_score + critics_score + genre + 
+               imdb_num_votes+ prizes+ audience_rating + critics_rating, data=movies2)
+summary(model7)
+
+```
+We increased more than 1% with the addition of audience rating and critics_rating, however prizes is not that relevant to the model.
+
+
+Given that the model 7 has the highest explanatory power, I will keep it ~83% of R²-Adjusted.
+
+Let's now look at the residuals and assess the final model.
+
+```{r}
+
+# Setup 2 graphics in one row
+par(mfrow=c(1,2))
+
+# Histogram of the residuals
+hist(model7$residuals)
+
+# qqplot
+qqnorm(model7$residuals)
+qqline(model7$residuals)
+
+```
+
+That's approximately normal. There is some skewness on the left side, but we are ok with it.
+
+
+```{r}
+plot(model7)
+```
+
+The model is fairly good, it shows some skewness in the residuals, but it is still a good model.
+The residuals don't show any pattern, which is good.
+
+* * *
+
+## Part 5: Prediction
+
+##### Train Test Split
+```{r}
+
+#Index to create a random sample for training
+train_index <- sample(1:nrow(movies2), size= 0.8*nrow(movies2) )
+
+# Train and test datasets
+train <- movies2[train_index,]
+test <- movies2[-train_index,]
+
+print( paste('train:', dim(train)) )
+print( paste('test:', dim(test)) )
+
+# Model Traning
+linear_model <- lm(imdb_rating ~ audience_score + critics_score + genre + 
+               imdb_num_votes+ prizes+ audience_rating + critics_rating, data=movies2)
+
+summary(linear_model)
+
+```
+
+
+```{r}
+# Predictions
+y_hat <- predict(linear_model, test)
+
+performance = data.frame(title = test$title,
+                         rating= test$imdb_rating,
+                         prediction = y_hat,
+                         y_error = test$imdb_rating - y_hat)
+
+# RMSE
+sqrt( mean(performance$y_error^2) )
+
+# MAE
+mae(performance$rating, performance$prediction)
+
+```
+```{r}
+
+# Get random predictions
+preds_sample <- sample(1:nrow(performance), 15)
+
+# View some predictions
+performance[preds_sample,]
+```
+
+
+* * *
+
+## Part 6: Conclusion
+
+Movie ratings are something subjective. 
+What one likes may not be the same as what other like. But having a lot of ratings from many people can show us some patterns that can be explained by the variables we have.
+
+In a Linear Regression, the objective is to explain the variability of the response variable - IMDB Ratings in this case - using other variables that are related to it.
+Using some statistical tests such as correlation (that measures the strength of a linear relationship between two variables) and ANOVA (that can test if the means of different groups are statistically equal or not), we are able to drive the choice of the best features to compose the model.
+
+From a dataset with 32 variables, we got to a final model with 4 variables, explaining more than 82% of the *imdb_ratings* variance. 
+The model presented - on the test set - a 0.43 points error on average for each prediction and 0.3 of Mean Absolute error.
